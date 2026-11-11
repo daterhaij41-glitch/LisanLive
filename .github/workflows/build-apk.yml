@@ -72,7 +72,7 @@ jobs:
           content = path.read_text(encoding="utf-8")
 
           old_url = "https://alphacephei.com/vosk/models/vosk-model-small-tr-0.3.zip"
-          new_url = "https://github.com/BartekReterski/VoskModels/releases/download/v1/vosk-model-small-tr-0.3.zip"
+          new_url = "https://huggingface.co/rhasspy/vosk-models/resolve/main/tr/vosk-model-small-tr-0.3.zip"
 
           if old_url not in content:
               raise SystemExit("Model URL not found; patch cancelled")
