@@ -59,6 +59,32 @@ jobs:
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Install Android platform
+            - name: Fix Turkish model download source
+        shell: bash
+        env:
+          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["PROJECT_DIR"]) / "app/src/main/java/com/lisanlive/app/ModelInstaller.kt"
+          content = path.read_text(encoding="utf-8")
+
+          old_url = "https://alphacephei.com/vosk/models/vosk-model-small-tr-0.3.zip"
+          new_url = "https://github.com/BartekReterski/VoskModels/releases/download/v1/vosk-model-small-tr-0.3.zip"
+
+          if old_url not in content:
+              raise SystemExit("Model URL not found; patch cancelled")
+
+          content = content.replace(old_url, new_url, 1)
+          content = content.replace("connectTimeout = 20_000", "connectTimeout = 30_000", 1)
+          content = content.replace("readTimeout = 60_000", "readTimeout = 180_000", 1)
+
+          path.write_text(content, encoding="utf-8")
+          print("Turkish model downloader updated successfully.")
+          PY
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
