@@ -1,11 +1,12 @@
-name: Build LisanLive 2.2.0 Audio APK
+name: Build LisanLive 2.3.1 APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
-      - 'LisanLive-Android-Source.zip'
+      - 'LisanLive-Android-Source-v2.3.1.zip'
       - '.github/workflows/build-apk.yml'
 
 permissions:
@@ -13,7 +14,7 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK 2.2.0
+    name: Build Android APK 2.3.1
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -41,89 +42,66 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Extract and verify source project
+      - name: Extract and verify LisanLive 2.3.1 source
         id: project
         shell: bash
         run: |
           set -euo pipefail
-
-          SOURCE_ARCHIVE="LisanLive-Android-Source.zip"
-
+          SOURCE_ARCHIVE="LisanLive-Android-Source-v2.3.1.zip"
           if [[ ! -s "$SOURCE_ARCHIVE" ]]; then
-            echo "::error::Source ZIP not found: $SOURCE_ARCHIVE"
+            echo "::error::Source archive not found: $SOURCE_ARCHIVE"
             exit 1
           fi
-
           unzip -tq "$SOURCE_ARCHIVE"
-
           DEST="$RUNNER_TEMP/lisanlive-source"
           mkdir -p "$DEST"
           unzip -q "$SOURCE_ARCHIVE" -d "$DEST"
-
-          mapfile -t SETTINGS_FILES < <(
-            find "$DEST" -type f -name settings.gradle.kts -print
-          )
-
+          mapfile -t SETTINGS_FILES < <(find "$DEST" -type f -name settings.gradle.kts -print)
           if [[ "${#SETTINGS_FILES[@]}" -ne 1 ]]; then
             echo "::error::Expected exactly one settings.gradle.kts file."
             exit 1
           fi
-
           PROJECT_DIR="$(dirname "${SETTINGS_FILES[0]}")"
-
           REQUIRED_FILES=(
             "app/build.gradle.kts"
             "app/src/main/java/com/lisanlive/app/MainActivity.kt"
             "app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
             "app/src/main/java/com/lisanlive/app/ModelInstaller.kt"
+            "app/src/main/java/com/lisanlive/app/GroqTranslator.kt"
+            "app/src/main/java/com/lisanlive/app/ApiKeyStore.kt"
             "app/src/main/AndroidManifest.xml"
           )
-
           for file in "${REQUIRED_FILES[@]}"; do
             if [[ ! -s "$PROJECT_DIR/$file" ]]; then
-              echo "::error::Missing project file: $file"
+              echo "::error::Missing source file: $file"
               exit 1
             fi
           done
-
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
-          echo "Source project located and verified."
+          echo "Source archive extracted successfully."
 
-      - name: Verify LisanLive 2.2.0 source
+      - name: Verify version and translation features
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
-
           APP="$PROJECT_DIR/app/build.gradle.kts"
           SERVICE="$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
-          ACTIVITY="$PROJECT_DIR/app/src/main/java/com/lisanlive/app/MainActivity.kt"
-
-          grep -Fq 'versionCode = 5' "$APP"
-          grep -Fq 'versionName = "2.2.0"' "$APP"
+          AI="$PROJECT_DIR/app/src/main/java/com/lisanlive/app/GroqTranslator.kt"
+          grep -Fq 'versionCode = 7' "$APP"
+          grep -Fq 'versionName = "2.3.1"' "$APP"
           grep -Fq 'AudioPlaybackCaptureConfiguration' "$SERVICE"
-          grep -Fq 'monitorAudioSignal' "$SERVICE"
+          grep -Fq 'translatePartial' "$SERVICE"
+          grep -Fq 'pendingCloudRequest' "$SERVICE"
+          grep -Fq 'whisper-large-v3' "$AI"
+          grep -Fq 'qwen/qwen3.8-27b' "$AI"
           grep -Fq 'ACTION_START_MIC' "$SERVICE"
-          grep -Fq 'show_source' "$SERVICE"
-          grep -Fq 'audio_level' "$ACTIVITY"
-
-          if grep -Fq 'ACTION_START_SCREEN' "$SERVICE"; then
-            echo "::error::Unexpected screen-capture action found."
-            exit 1
-          fi
-
           if grep -Fq 'TextRecognition' "$SERVICE"; then
-            echo "::error::Unexpected text recognition code found."
+            echo "::error::Unexpected OCR code found in audio-only service."
             exit 1
           fi
-
-          if grep -Fq 'lastFinal' "$SERVICE"; then
-            echo "::error::Old repeated-phrase filter found."
-            exit 1
-          fi
-
-          echo "LisanLive 2.2.0 source checks passed."
+          echo "LisanLive 2.3.1 source checks passed."
 
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.project_dir }}
@@ -138,23 +116,20 @@ jobs:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
-
           APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
-
           if [[ ! -s "$APK" ]]; then
             echo "::error::APK was not generated."
             exit 1
           fi
-
           mkdir -p apk-output
-          cp "$APK" apk-output/LisanLive-2.2.0-debug.apk
-
+          cp "$APK" apk-output/LisanLive-2.3.1-debug.apk
           echo "APK size: $(stat -c%s "$APK") bytes"
 
       - name: Upload LisanLive APK
         uses: actions/upload-artifact@v4
         with:
-          name: LisanLive-2.2.0-Audio-APK
-          path: apk-output/LisanLive-2.2.0-debug.apk
+          name: LisanLive-2.3.1-APK
+          path: apk-output/LisanLive-2.3.1-debug.apk
           if-no-files-found: error
           retention-days: 14
+          
