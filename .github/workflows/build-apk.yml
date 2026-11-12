@@ -1,23 +1,28 @@
-name: Build LisanLive APK
+name: Build LisanLive 2.2.0 Audio APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'LisanLive-Android-Source.zip'
+      - '.github/workflows/build-apk.yml'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Android APK 2.2.0
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -25,112 +30,131 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Set up Gradle
+      - name: Install Android platform and build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.13'
 
-      - name: Extract Android project
+      - name: Extract and verify source project
         id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          SOURCE_DIR="$RUNNER_TEMP/lisanlive-source"
-          mkdir -p "$SOURCE_DIR"
+          SOURCE_ARCHIVE="LisanLive-Android-Source.zip"
 
-          unzip -q LisanLive-Android-Source.zip -d "$SOURCE_DIR"
-
-          SETTINGS_FILE="$(find "$SOURCE_DIR" -name settings.gradle.kts -print -quit)"
-
-          if [[ -z "$SETTINGS_FILE" ]]; then
-            echo "::error::settings.gradle.kts not found"
+          if [[ ! -s "$SOURCE_ARCHIVE" ]]; then
+            echo "::error::Source ZIP not found: $SOURCE_ARCHIVE"
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          unzip -tq "$SOURCE_ARCHIVE"
 
-          if [[ ! -f "$PROJECT_DIR/app/build.gradle.kts" ]]; then
-            echo "::error::App module not found"
+          DEST="$RUNNER_TEMP/lisanlive-source"
+          mkdir -p "$DEST"
+          unzip -q "$SOURCE_ARCHIVE" -d "$DEST"
+
+          mapfile -t SETTINGS_FILES < <(
+            find "$DEST" -type f -name settings.gradle.kts -print
+          )
+
+          if [[ "${#SETTINGS_FILES[@]}" -ne 1 ]]; then
+            echo "::error::Expected exactly one settings.gradle.kts file."
             exit 1
           fi
+
+          PROJECT_DIR="$(dirname "${SETTINGS_FILES[0]}")"
+
+          REQUIRED_FILES=(
+            "app/build.gradle.kts"
+            "app/src/main/java/com/lisanlive/app/MainActivity.kt"
+            "app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+            "app/src/main/java/com/lisanlive/app/ModelInstaller.kt"
+            "app/src/main/AndroidManifest.xml"
+          )
+
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [[ ! -s "$PROJECT_DIR/$file" ]]; then
+              echo "::error::Missing project file: $file"
+              exit 1
+            fi
+          done
 
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Source project located and verified."
 
-      - name: Fix Turkish model download source
+      - name: Verify LisanLive 2.2.0 source
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
 
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
+          APP="$PROJECT_DIR/app/build.gradle.kts"
+          SERVICE="$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          ACTIVITY="$PROJECT_DIR/app/src/main/java/com/lisanlive/app/MainActivity.kt"
 
-          path = Path(os.environ["PROJECT_DIR"]) / "app/src/main/java/com/lisanlive/app/ModelInstaller.kt"
-          content = path.read_text(encoding="utf-8")
+          grep -Fq 'versionCode = 5' "$APP"
+          grep -Fq 'versionName = "2.2.0"' "$APP"
+          grep -Fq 'AudioPlaybackCaptureConfiguration' "$SERVICE"
+          grep -Fq 'monitorAudioSignal' "$SERVICE"
+          grep -Fq 'ACTION_START_MIC' "$SERVICE"
+          grep -Fq 'show_source' "$SERVICE"
+          grep -Fq 'audio_level' "$ACTIVITY"
 
-          old_url = "https://alphacephei.com/vosk/models/vosk-model-small-tr-0.3.zip"
-          new_url = "https://huggingface.co/rhasspy/vosk-models/resolve/main/tr/vosk-model-small-tr-0.3.zip"
-
-          if old_url not in content:
-              raise SystemExit("Model URL not found; patch cancelled")
-
-          content = content.replace(old_url, new_url, 1)
-          content = content.replace("connectTimeout = 20_000", "connectTimeout = 30_000", 1)
-          content = content.replace("readTimeout = 60_000", "readTimeout = 180_000", 1)
-
-          path.write_text(content, encoding="utf-8")
-          print("Turkish model downloader updated successfully.")
-          PY
-
-      - name: Install Android platform
-        shell: bash
-        env:
-          PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
-        run: |
-          set -euo pipefail
-
-          COMPILE_SDK="$(grep -RhoE 'compileSdk(Version)?[[:space:]]*(=[[:space:]]*|[[:space:]]+)[0-9]+' \
-            --include='*.gradle.kts' "$PROJECT_DIR" \
-            | grep -oE '[0-9]+' | head -n 1 || true)"
-
-          if [[ -z "$COMPILE_SDK" ]]; then
-            COMPILE_SDK=35
+          if grep -Fq 'ACTION_START_SCREEN' "$SERVICE"; then
+            echo "::error::Unexpected screen-capture action found."
+            exit 1
           fi
 
-          sdkmanager --install "platforms;android-${COMPILE_SDK}"
+          if grep -Fq 'TextRecognition' "$SERVICE"; then
+            echo "::error::Unexpected text recognition code found."
+            exit 1
+          fi
 
-      - name: Build APK
+          if grep -Fq 'lastFinal' "$SERVICE"; then
+            echo "::error::Old repeated-phrase filter found."
+            exit 1
+          fi
+
+          echo "LisanLive 2.2.0 source checks passed."
+
+      - name: Build debug APK
         working-directory: ${{ steps.project.outputs.project_dir }}
         shell: bash
         run: |
           set -euo pipefail
           gradle --no-daemon --stacktrace --console=plain :app:assembleDebug
 
-      - name: Collect APK
+      - name: Verify and collect APK
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
 
-          mkdir -p apk-output
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
 
-          find "$PROJECT_DIR" -type f -name '*.apk' \
-            -path '*/build/outputs/apk/*' \
-            -exec cp {} apk-output/ \;
-
-          if ! ls apk-output/*.apk >/dev/null 2>&1; then
-            echo "::error::No APK was generated"
+          if [[ ! -s "$APK" ]]; then
+            echo "::error::APK was not generated."
             exit 1
           fi
 
-      - name: Upload APK
-        uses: actions/upload-artifact@v7
+          mkdir -p apk-output
+          cp "$APK" apk-output/LisanLive-2.2.0-debug.apk
+
+          echo "APK size: $(stat -c%s "$APK") bytes"
+
+      - name: Upload LisanLive APK
+        uses: actions/upload-artifact@v4
         with:
-          name: LisanLive-APK
-          path: apk-output/*.apk
+          name: LisanLive-2.2.0-Audio-APK
+          path: apk-output/LisanLive-2.2.0-debug.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
