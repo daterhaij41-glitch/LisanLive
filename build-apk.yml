@@ -1,157 +1,114 @@
-
-name: Build LisanLive APK
+name: Build LisanLive 2.2.0 Audio APK
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'LisanLive-Android-Source.zip'
+      - 'LisanLive-Android-Source-*.zip'
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build Android APK 2.2.0
     runs-on: ubuntu-latest
     timeout-minutes: 45
-
     steps:
-      - name: Download repository files
-        uses: actions/checkout@v7
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v6
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
+      - name: Set up Android SDK 35
         uses: android-actions/setup-android@v4
 
-      - name: Extract and locate Android project
+      - name: Install Android platform and build tools
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle 8.13
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Locate and extract source archive
         id: project
         shell: bash
         run: |
           set -euo pipefail
-
-          ZIP_FILE="LisanLive-Android-Source.zip"
-
-          if [[ ! -f "$ZIP_FILE" ]]; then
-            echo "::error::Source ZIP file was not found."
+          SOURCE_ARCHIVE="LisanLive-Android-Source.zip"
+          if [[ ! -f "$SOURCE_ARCHIVE" ]]; then
+            mapfile -t CANDIDATES < <(find . -maxdepth 2 -type f -name 'LisanLive-Android-Source*.zip' -print | sort)
+            if [[ ${#CANDIDATES[@]} -eq 1 ]]; then
+              SOURCE_ARCHIVE="${CANDIDATES[0]}"
+            else
+              echo "::error::Upload one source archive named LisanLive-Android-Source.zip. Found: ${CANDIDATES[*]:-none}"
+              exit 1
+            fi
+          fi
+          DEST="$RUNNER_TEMP/lisanlive-source"
+          mkdir -p "$DEST"
+          unzip -q "$SOURCE_ARCHIVE" -d "$DEST"
+          SETTINGS_FILE="$(find "$DEST" -type f -name settings.gradle.kts -print -quit)"
+          if [[ -z "$SETTINGS_FILE" ]]; then
+            echo "::error::settings.gradle.kts was not found in the source archive"
             exit 1
           fi
-
-          SOURCE_DIR="$RUNNER_TEMP/lisanlive-source"
-          mkdir -p "$SOURCE_DIR"
-
-          unzip -q "$ZIP_FILE" -d "$SOURCE_DIR"
-
-          WRAPPER="$(find "$SOURCE_DIR" -type f -name gradlew -print -quit)"
-
-          if [[ -z "$WRAPPER" ]]; then
-            echo "::error::No Gradle wrapper was found in the ZIP archive."
-            echo "The archive must contain a complete Android Gradle project."
-            exit 1
-          fi
-
-          PROJECT_DIR="$(dirname "$WRAPPER")"
-
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          for file in \
+            app/build.gradle.kts \
+            app/src/main/java/com/lisanlive/app/MainActivity.kt \
+            app/src/main/java/com/lisanlive/app/LiveTranslateService.kt \
+            app/src/main/java/com/lisanlive/app/ModelInstaller.kt \
+            app/src/main/AndroidManifest.xml; do
+            test -s "$PROJECT_DIR/$file" || { echo "::error::Missing project file: $file"; exit 1; }
+          done
           echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Using source archive: $SOURCE_ARCHIVE"
+          echo "Project root: $PROJECT_DIR"
 
-          echo "Android project found at: $PROJECT_DIR"
-
-      - name: Install Android SDK platform
+      - name: Verify audio-only source and version
         shell: bash
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
-
-          COMPILE_SDK="$(
-            grep -RhoE 'compileSdk(Version)?[[:space:]]*(=[[:space:]]*|[[:space:]]+)[0-9]+' \
-              --include='*.gradle' \
-              --include='*.gradle.kts' \
-              "$PROJECT_DIR" 2>/dev/null \
-            | grep -oE '[0-9]+' \
-            | head -n 1 || true
-          )"
-
-          if [[ -z "$COMPILE_SDK" ]]; then
-            echo "::warning::Could not detect compileSdk. Using Android 35 as fallback."
-            COMPILE_SDK=35
-          fi
-
-          echo "Installing Android platform $COMPILE_SDK"
-
-          sdkmanager --install "platforms;android-${COMPILE_SDK}"
+          grep -q 'versionCode = 5' "$PROJECT_DIR/app/build.gradle.kts"
+          grep -q 'versionName = "2.2.0"' "$PROJECT_DIR/app/build.gradle.kts"
+          grep -q 'AudioPlaybackCaptureConfiguration' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          grep -q 'monitorAudioSignal' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          grep -q 'ACTION_START_MIC' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          grep -q 'show_source' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          grep -q 'audio_level' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/MainActivity.kt"
+          ! grep -q 'ACTION_START_SCREEN' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          ! grep -q 'TextRecognition' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
+          ! grep -q 'text-recognition' "$PROJECT_DIR/app/build.gradle.kts"
+          ! grep -q 'lastFinal' "$PROJECT_DIR/app/src/main/java/com/lisanlive/app/LiveTranslateService.kt"
 
       - name: Build debug APK
         working-directory: ${{ steps.project.outputs.project_dir }}
-        shell: bash
-        run: |
-          set -euo pipefail
+        run: gradle --no-daemon --stacktrace --console=plain :app:assembleDebug
 
-          chmod +x gradlew
-
-          TASK_LIST="$(./gradlew --no-daemon --console=plain tasks --all)"
-
-          BUILD_TASK="$(
-            printf '%s\n' "$TASK_LIST" \
-            | awk '$1 ~ /(^|:)assembleDebug$/ { print $1; exit }'
-          )"
-
-          if [[ -z "$BUILD_TASK" ]]; then
-            BUILD_TASK=":app:assembleDebug"
-          elif [[ "$BUILD_TASK" != "assembleDebug" && "$BUILD_TASK" != :* ]]; then
-            BUILD_TASK=":$BUILD_TASK"
-          fi
-
-          echo "Running Gradle task: $BUILD_TASK"
-
-          ./gradlew \
-            --no-daemon \
-            --stacktrace \
-            --console=plain \
-            "$BUILD_TASK"
-
-      - name: Collect generated APK files
-        shell: bash
+      - name: Verify APK
         env:
           PROJECT_DIR: ${{ steps.project.outputs.project_dir }}
         run: |
           set -euo pipefail
-
-          OUTPUT_DIR="$GITHUB_WORKSPACE/apk-output"
-          mkdir -p "$OUTPUT_DIR"
-
-          COUNT=0
-
-          while IFS= read -r -d '' APK; do
-            RELATIVE_PATH="${APK#"$PROJECT_DIR"/}"
-            SAFE_NAME="${RELATIVE_PATH//\//_}"
-
-            cp "$APK" "$OUTPUT_DIR/$SAFE_NAME"
-
-            echo "Collected: $SAFE_NAME"
-            COUNT=$((COUNT + 1))
-          done < <(
-            find "$PROJECT_DIR" \
-              -type f \
-              -name '*.apk' \
-              -path '*/build/outputs/apk/*' \
-              -print0
-          )
-
-          if [[ "$COUNT" -eq 0 ]]; then
-            echo "::error::The build finished but no APK file was found."
-            exit 1
-          fi
-
-          echo "Total APK files: $COUNT"
+          APK="$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          echo "APK size: $(stat -c%s "$APK") bytes"
 
       - name: Upload LisanLive APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: LisanLive-APK
-          path: apk-output/*.apk
+          name: LisanLive-2.2.0-Audio-APK
+          path: ${{ steps.project.outputs.project_dir }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 14
           
